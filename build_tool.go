@@ -1,6 +1,6 @@
 package main
 
-// Go Build Tool v0.4 (2025-07-28) (e6dc10a2d25de308)
+// Go Build Tool v0.5 (2025-07-28) (755a3c7609f9d349)
 // https://github.com/mrvnmyr/go-build-tool
 //
 // This is a simple standalone binary that builds the actual project.
@@ -42,11 +42,14 @@ var (
 )
 
 var (
-	flagBuildAll = false
-	flagDebug    = false
-	flagNoGoGet  = false
-	configPath   = ""
-	config       BuildConfig
+	flagBuildAll  = false
+	flagDebug     = false
+	flagNoGoGet   = false
+	flagNoSymlink = false
+	configPath    = ""
+	config        BuildConfig
+
+	currentBinPath = ""
 )
 
 type BuildConfig struct {
@@ -108,6 +111,55 @@ func run(args []string, envMap map[string]string) {
 
 	err := cmd.Run()
 	check(err)
+}
+
+// EnsureSymlink ensures that `from` is a symlink pointing to `to`.
+// It follows the logic:
+// - If `from` does not exist, create symlink from → to.
+// - If `from` exists and is not a symlink, do nothing.
+// - If `from` exists and is a symlink:
+//   - If it already points to `to`, do nothing.
+//   - If not, recreate the symlink to point to `to`.
+func ensureSymlink(from, to string) error {
+	info, err := os.Lstat(from)
+	if os.IsNotExist(err) {
+		// 'from' does not exist; create symlink
+		return os.Symlink(to, from)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to stat %q: %w", from, err)
+	}
+
+	if info.Mode()&os.ModeSymlink == 0 {
+		// from exists but is not a symlink; do nothing
+		return nil
+	}
+
+	// from is a symlink; read where it points to
+	linkDest, err := os.Readlink(from)
+	if err != nil {
+		return fmt.Errorf("failed to read symlink %q: %w", from, err)
+	}
+
+	absTo, err := filepath.Abs(to)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path of %q: %w", to, err)
+	}
+	absLinkDest, err := filepath.Abs(filepath.Join(filepath.Dir(from), linkDest))
+	if err != nil {
+		return fmt.Errorf("failed to resolve absolute symlink target %q: %w", linkDest, err)
+	}
+
+	if absTo == absLinkDest {
+		// Symlink already points to the correct location
+		return nil
+	}
+
+	// Remove old symlink and recreate it
+	if err := os.Remove(from); err != nil {
+		return fmt.Errorf("failed to remove existing symlink %q: %w", from, err)
+	}
+	return os.Symlink(to, from)
 }
 
 func findDirUpwardsContaining(filename string) (string, error) {
@@ -177,8 +229,15 @@ func parseCLIFlags() {
 	flag.BoolVar(&flagBuildAll, "all", false, "Build all defined GOOS/GOARCH targets (same as -a)")
 	flag.BoolVar(&flagDebug, "d", false, "Enable debug mode")
 	flag.BoolVar(&flagDebug, "debug", false, "Enable debug mode (same as -d)")
-	flag.BoolVar(&flagNoGoGet, "ngg", false, "Don't run 'go get' before building")
-	flag.BoolVar(&flagNoGoGet, "no-go-get", false, "Don't run 'go get' before building (same as -ngg)")
+	flag.BoolVar(&flagNoGoGet, "nogg", false, "Don't run 'go get' before building")
+	flag.BoolVar(&flagNoGoGet, "no-go-get", false, "Don't run 'go get' before building (same as -nogg)")
+	flag.BoolVar(&flagNoSymlink, "nos", false, "Don't generate a symlink for the current target")
+	flag.BoolVar(&flagNoSymlink, "no-symlink", false, "Don't generate a symlink for the current target (same as -nos)")
+
+	flag.Usage = func() {
+		fmt.Printf("To build a target for your current platform,\nrun this program without arguments.\n\n")
+		flag.PrintDefaults()
+	}
 
 	// Parse flags
 	flag.Parse()
@@ -216,9 +275,9 @@ func main() {
 			panic(err)
 		}
 
-		debugf("Config: %+v\n", config)
-
 		determineBinName()
+
+		debugf("Config: %+v\n", config)
 	}
 
 	// RunEntry describes a single process to launch
@@ -234,51 +293,63 @@ func main() {
 		run([]string{"go", "get"}, nil)
 	}
 
-	// add all GOOS/GOARCH combinations from the config
-	if flagBuildAll {
+	{ // add all GOOS/GOARCH combinations from the config
 		for _, triplet := range config.Platforms {
 			goos := strings.ToLower(triplet[0])
 			goarch := strings.ToLower(triplet[1])
 
-			binExtension := ""
-			if goos == "windows" {
-				binExtension = ".exe"
+			isCurrentPlatform := ((goos == runtime.GOOS) && (goarch == runtime.GOARCH))
+
+			if flagBuildAll || isCurrentPlatform {
+				binExtension := ""
+				if goos == "windows" {
+					binExtension = ".exe"
+				}
+
+				fileSuffix := fmt.Sprintf("%s_%s%s", goos, goarch, binExtension)
+				fileName := fmt.Sprintf("%s_%s", config.BinName, fileSuffix)
+				filePath := fmt.Sprintf("./bin/%s", fileName)
+
+				if isCurrentPlatform {
+					currentBinPath = filePath
+				}
+
+				env := map[string]string{
+					"GOOS":   goos,
+					"GOARCH": goarch,
+				}
+
+				// spread config.Env into env
+				for k, v := range config.Env {
+					env[k] = v
+				}
+
+				// append
+				entries = append(entries, RunEntry{
+					Args: []string{
+						"go",
+						"build",
+						"-o",
+						filePath,
+					},
+					Env: env,
+				})
 			}
 
-			fileSuffix := fmt.Sprintf("%s_%s%s", goos, goarch, binExtension)
-			env := map[string]string{
-				"GOOS":   goos,
-				"GOARCH": goarch,
-			}
-
-			// spread config.Env into env
-			for k, v := range config.Env {
-				env[k] = v
-			}
-
-			fileName := fmt.Sprintf("%s_%s", config.BinName, fileSuffix)
-
-			// append
-			entries = append(entries, RunEntry{
-				Args: []string{
-					"go",
-					"build",
-					"-o",
-					fmt.Sprintf("./bin/%s", fileName),
-				},
-				Env: env,
-			})
 		}
 	}
 
-	{ // add current GOOS/GOARCH
-		entries = append(entries, RunEntry{
-			Args: []string{
-				"go",
-				"build",
-			},
-			Env: config.Env,
-		})
+	// symlink current GOOS/GOARCH
+	if !flagNoSymlink {
+		var currentSymlinkPath = ""
+		if runtime.GOOS == "windows" {
+			currentSymlinkPath = fmt.Sprintf("%s.exe", config.BinName)
+		} else {
+			currentSymlinkPath = fmt.Sprintf("%s", config.BinName)
+		}
+
+		err := ensureSymlink(currentSymlinkPath, currentBinPath)
+		check(err)
 	}
 
 	{ // run it all
