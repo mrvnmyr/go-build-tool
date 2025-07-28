@@ -1,12 +1,24 @@
 package main
 
-// Go Build Tool v0.1 (2025-07-28) (49fa8785c1d6b286)
+// Go Build Tool v0.2 (2025-07-28) (d61a14a203a4ea1c)
 // https://github.com/mrvnmyr/go-build-tool
-
+//
 // This is a simple standalone binary that builds the actual project.
 //
 // You could do the same thing with OS specific shell scripts, but we want to be
 // cross-platform and not require much other than 'go' and 'git'.
+//
+//
+// USAGE
+//
+// Copy this into a single subdirectory below your go project root (e.g.:
+// "./build-tool/main.go") and tell people to build the project via running:
+//
+// $ go run ./build-tool/main.go
+//
+// To see all supported options/CLI flags, run:
+//
+// $ go run ./build-tool/main.go -h
 
 import (
 	"bytes"
@@ -37,6 +49,7 @@ var (
 )
 
 type BuildConfig struct {
+	BinName   string            `json:"binName"`
 	Env       map[string]string `json:"env"`
 	Platforms [][]string        `json:"platforms"`
 }
@@ -96,7 +109,7 @@ func run(args []string, envMap map[string]string) {
 	check(err)
 }
 
-func findUpwards(filename string) (string, error) {
+func findDirUpwardsContaining(filename string) (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
 		return "", err
@@ -120,6 +133,44 @@ func findUpwards(filename string) (string, error) {
 	return "", fmt.Errorf("file %s not found in any parent directory", filename)
 }
 
+func determineBinName() {
+	if config.BinName != "" {
+		// can be overriden in build.json
+		return
+	}
+
+	readSuccessfullyFromGoMod := func() bool {
+		// Try to read project name from ../go.mod
+		goModPath, err := findDirUpwardsContaining("go.mod")
+		if err != nil {
+			return false
+		}
+
+		goModPath = filepath.Join(goModPath, "go.mod")
+
+		goModContents, err := os.ReadFile(goModPath)
+		if err == nil {
+			debugf("Reading project name from: %s\n", goModPath)
+			for _, line := range bytes.Split(goModContents, []byte{'\n'}) {
+				if bytes.HasPrefix(line, []byte("module ")) {
+					fields := bytes.Fields(line)
+					if len(fields) >= 2 {
+						modulePath := string(fields[1])
+						config.BinName = filepath.Base(modulePath)
+						debugf("New config BinName: %s\n", config.BinName)
+					}
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	if !readSuccessfullyFromGoMod() {
+		config.BinName = "bin"
+	}
+}
+
 func main() {
 	{ // parse CLI flags
 		flag.BoolVar(&flagDebug, "d", false, "Enable debug mode")
@@ -134,7 +185,7 @@ func main() {
 	}
 
 	{ // cd to project root
-		dir, err := findUpwards(CONFIG_FILE_NAME)
+		dir, err := findDirUpwardsContaining(CONFIG_FILE_NAME)
 		check(err)
 
 		err = os.Chdir(dir)
@@ -162,7 +213,9 @@ func main() {
 			panic(err)
 		}
 
-		debugf("Config: %v\n", config)
+		debugf("Config: %+v\n", config)
+
+		determineBinName()
 	}
 
 	// RunEntry describes a single process to launch
@@ -173,11 +226,13 @@ func main() {
 
 	var entries []RunEntry
 
-	if !flagNoGoGet { // 'run go get' first
+	// 'run go get' first
+	if !flagNoGoGet {
 		run([]string{"go", "get"}, nil)
 	}
 
-	if !flagOnlyCurrent { // add all GOOS/GOARCH combinations from the config
+	// add all GOOS/GOARCH combinations from the config
+	if !flagOnlyCurrent {
 		for _, triplet := range config.Platforms {
 			goos := triplet[0]
 			goarch := triplet[1]
@@ -194,7 +249,7 @@ func main() {
 				env[k] = v
 			}
 
-			fileName := fmt.Sprintf("oat_%s", fileSuffix)
+			fileName := fmt.Sprintf("%s_%s", config.BinName, fileSuffix)
 
 			// append
 			entries = append(entries, RunEntry{
@@ -328,7 +383,6 @@ func main() {
 				var failures []Result
 				for _, result := range sortedResults {
 					if flagDebug {
-						// debugf("---\nCommand: %v\nEnv: %v\nExit code: %d\nStdout: %sStderr: %s\n", result.Entry.Args, result.Entry.Env, result.ExitCode, result.Stdout, result.Stderr)
 						debugf("---\nCommand: %v\nEnv: %v\n", result.Entry.Args, result.Entry.Env)
 						if result.ExitCode != 0 {
 							debugf("Exit Code: %d\n", result.ExitCode)
