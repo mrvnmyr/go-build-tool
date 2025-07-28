@@ -1,6 +1,6 @@
 package main
 
-// Go Build Tool v0.2 (2025-07-28) (d61a14a203a4ea1c)
+// Go Build Tool v0.3 (2025-07-28) (eba2d94fded59068)
 // https://github.com/mrvnmyr/go-build-tool
 //
 // This is a simple standalone binary that builds the actual project.
@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -234,9 +235,13 @@ func main() {
 	// add all GOOS/GOARCH combinations from the config
 	if !flagOnlyCurrent {
 		for _, triplet := range config.Platforms {
-			goos := triplet[0]
-			goarch := triplet[1]
-			binExtension := triplet[2]
+			goos := strings.ToLower(triplet[0])
+			goarch := strings.ToLower(triplet[1])
+
+			binExtension := ""
+			if goos == "windows" {
+				binExtension = ".exe"
+			}
 
 			fileSuffix := fmt.Sprintf("%s_%s%s", goos, goarch, binExtension)
 			env := map[string]string{
