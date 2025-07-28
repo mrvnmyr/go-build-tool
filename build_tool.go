@@ -1,6 +1,6 @@
 package main
 
-// Go Build Tool v0.3 (2025-07-28) (eba2d94fded59068)
+// Go Build Tool v0.4 (2025-07-28) (e6dc10a2d25de308)
 // https://github.com/mrvnmyr/go-build-tool
 //
 // This is a simple standalone binary that builds the actual project.
@@ -42,11 +42,11 @@ var (
 )
 
 var (
-	flagDebug       = false
-	flagOnlyCurrent = false
-	flagNoGoGet     = false
-	configPath      = ""
-	config          BuildConfig
+	flagBuildAll = false
+	flagDebug    = false
+	flagNoGoGet  = false
+	configPath   = ""
+	config       BuildConfig
 )
 
 type BuildConfig struct {
@@ -172,18 +172,20 @@ func determineBinName() {
 	}
 }
 
-func main() {
-	{ // parse CLI flags
-		flag.BoolVar(&flagDebug, "d", false, "Enable debug mode")
-		flag.BoolVar(&flagDebug, "debug", false, "Enable debug mode (same as -d)")
-		flag.BoolVar(&flagOnlyCurrent, "oc", false, "Build only for current GOOS/GOARCH")
-		flag.BoolVar(&flagOnlyCurrent, "only-current", false, "Build only for current GOOS/GOARCH (same as -oc)")
-		flag.BoolVar(&flagNoGoGet, "ngg", false, "Don't run 'go get' before building")
-		flag.BoolVar(&flagNoGoGet, "no-go-get", false, "Don't run 'go get' before building (same as -ngg)")
+func parseCLIFlags() {
+	flag.BoolVar(&flagBuildAll, "a", false, "Build all defined GOOS/GOARCH targets")
+	flag.BoolVar(&flagBuildAll, "all", false, "Build all defined GOOS/GOARCH targets (same as -a)")
+	flag.BoolVar(&flagDebug, "d", false, "Enable debug mode")
+	flag.BoolVar(&flagDebug, "debug", false, "Enable debug mode (same as -d)")
+	flag.BoolVar(&flagNoGoGet, "ngg", false, "Don't run 'go get' before building")
+	flag.BoolVar(&flagNoGoGet, "no-go-get", false, "Don't run 'go get' before building (same as -ngg)")
 
-		// Parse flags
-		flag.Parse()
-	}
+	// Parse flags
+	flag.Parse()
+}
+
+func main() {
+	parseCLIFlags()
 
 	{ // cd to project root
 		dir, err := findDirUpwardsContaining(CONFIG_FILE_NAME)
@@ -233,7 +235,7 @@ func main() {
 	}
 
 	// add all GOOS/GOARCH combinations from the config
-	if !flagOnlyCurrent {
+	if flagBuildAll {
 		for _, triplet := range config.Platforms {
 			goos := strings.ToLower(triplet[0])
 			goarch := strings.ToLower(triplet[1])
@@ -413,8 +415,8 @@ func main() {
 					os.Exit(1)
 				}
 
-				if flagOnlyCurrent {
-					debugf("\nAll builds succeeded. (Only Current GOOS/GOARCH)\n")
+				if !flagBuildAll {
+					debugf("\nAll builds succeeded. (Only Current GOOS/GOARCH, pass -all to build all targets)\n")
 				} else {
 					debugf("\nAll builds succeeded.\n")
 				}
